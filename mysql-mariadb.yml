@@ -1,231 +1,284 @@
-#This file is part of https://gitlab.com/oprudkyi/openshift-templates
-#
-#Copyright (c) 2024 Florient 
-#
+---
+
+kind: template.openshift.io/v1
 apiVersion: v1
-kind: Template
-labels:
-  template: hostmount-official-mysql-percona-mariadb
 metadata:
+  name: wordpress-mysql
   annotations:
-    description: |
-      Runs official MySQL(or Percona/MariaDB) images from official repositories at docker hub.
-      It uses local fs on node (hostmount SCC) to store files.
+    openshift.io/display-name: WordPress + MySQL
+    description: >
+      A WordPress application with a MySQL database using persistent storage
+      for WordPress uploads, WordPress plugins, and MySQL data.
+    tags: instant-app,php,wordpress
+    iconClass: icon-php
+labels:
+  template: wordpress-mysql
 
-      Before you start, please setup Security Context Constraints (SCC) for service accounts used for running 
-      container (hostmount-anyuid means commands inside containers can run as root and access host file system)
-        oc login -u system:admin
-        oc adm policy add-scc-to-user hostmount-anyuid -z sa-hostmount-mysql -n CURRENT_PROJECT_NAME
-      Based on mysql-ephemeral-template.yml
 
-    tags: database
-    openshift.io/display-name: Mysql/Percona/MariaDB (uses hostmount)
-  creationTimestamp: null
-  name: hostmount-official-mysql-percona-mariadb
 parameters:
-- displayName: Data Path
-  description: Host/Node path for database files, mounted as /var/lib/mysql inside container
-  name: MYSQL_DATA_PATH
-  required: true
-- displayName: Database Service Name
-  name: MYSQL_SERVICE_NAME
-  required: true
-  value: hostmount-mysql
-- displayName: Database Name
-  name: MYSQL_DATABASE
-  required: true
-  value: homestead
-  description: Used for fresh database only
-- displayName: Database User
-  name: MYSQL_USER
-  required: true
-  value: homestead
-  description: Used for fresh database only
-- displayName: Database Password
-  name: MYSQL_PASSWORD
-  value: secret 
-  required: true
-  description: Used for fresh database only
-- displayName: Root Password
-  name: MYSQL_ROOT_PASSWORD
-  value: root 
-  required: true
-  description: Used for fresh database only
-- description: |
-    Repositiry of image (mysql, percona or mariadb). Will use https://hub.docker.com/r/library/mysql/ , 
-    https://hub.docker.com/r/library/percona/ or https://hub.docker.com/r/library/mariadb/.
-    You may try "oprudkyi/percona-latest" as it fixes https://github.com/docker-library/percona/issues/40
-  displayName: Image Repository at Docker Hub
-  name: DOCKER_REPOSITORY
-  value: "percona"
-  required: true
-- description: |
-    Tag of image (5.5, 5.6, 5.7 or latest). Check https://hub.docker.com/r/library/mysql/tags/ , 
-    https://hub.docker.com/r/library/percona/tags/ ,
-    https://hub.docker.com/r/library/mariadb/tags/
-    for list of supported values 
-  displayName: Image Tag at Docker Hub
-  name: DOCKER_TAG
-  value: "latest"
-  required: true
+  - name: APPLICATION_NAME
+    description: >
+      The name of the application that will be used as a prefix for services,
+      routes, images, etc
+    value: wordpress
+    required: true
 
-- description: SQL mode of server.
-  displayName: SQL mode
-  name: MYSQL_SQL_MODE
-  required: false
-  value: "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"
+  - name: SOURCE_REPOSITORY_URL
+    description: The URL of the repository with your application source code
+    value: https://github.com/jaredhocutt/openshift-wordpress.git
+    required: true
 
-- description: The size of the buffer pool where InnoDB caches table and index data.
-  displayName: innodb_buffer_pool_size
-  name: MYSQL_INNODB_BUFFER_POOL_SIZE
-  required: true
-  value: "256M"
+  - name: SOURCE_REPOSITORY_REF
+    description: >
+      Set this to a branch name, tag or other ref of your repository if you
+      are not using the default branch
 
-- description: The size of the buffer used for index blocks.
-  displayName: key_buffer_size
-  name: MYSQL_KEY_BUFFER_SIZE
-  required: true
-  value: "8m"
+  - name: CONTEXT_DIR
+    description: >
+      Set this to the relative path to your project if it is not in the root
+      of your repository
+    value: wordpress
 
-- description: Maximum amount of memory the MySQL container can use (Please ensure your other settings are compatible with this limit, otherways you may get weird errors like 'Table is full' etc).
-  displayName: Memory Limit (MySQL)
-  name: MYSQL_MEMORY_LIMIT
-  required: true
-  value: 512Mi
+  - name: GITHUB_WEBHOOK_SECRET
+    description: A secret string used to configure the GitHub webhook
+    generate: expression
+    from: "[a-zA-Z0-9]{40}"
 
-- description: Additional mysql.cnf lines in format param_name=value
-  displayName: Additional mysql.cnf lines 
-  name: MYSQL_CNF_LINE
-  required: false
-  value: ""
+  - name: APPLICATION_DOMAIN
+    description: >
+      The exposed hostname that will route to the wordpress service, if left
+      blank a value will be defaulted
+    value:
+
+  - name: DATABASE_NAME
+    description: Database name
+    value: wordpress
+    required: true
+
+  - name: DATABASE_USER
+    description: Database user name
+    value: wordpress
+    required: true
+
+  - name: DATABASE_PASSWORD
+    description: Database user password
+    generate: expression
+    from: "[a-zA-Z0-9]{16}"
 
 
 objects:
-- apiVersion: v1
-  kind: ServiceAccount
-  metadata:
-    name: sa-hostmount-mysql
-- apiVersion: v1
-  kind: ImageStream
-  metadata:
-    creationTimestamp: null
-    labels:
-      app: hostmount-official-mysql-percona-mariadb
-    name: is-${MYSQL_SERVICE_NAME}
-  spec:
-    dockerImageRepository: ""
-    tags:
-      -
-       from:
-         kind: DockerImage
-         name: ${DOCKER_REPOSITORY}:${DOCKER_TAG}
-       name: ${MYSQL_SERVICE_NAME}_pseudo_tag
-       importPolicy:
-         scheduled: true
-  status:
-    dockerImageRepository: ""
-- apiVersion: v1
-  kind: ConfigMap
-  metadata:
-    name: cm-${MYSQL_SERVICE_NAME}-my-cnf
-  data:
-    my.cnf: |
-        #you have to manually restart/redeploy service after editing Config Map to use new values
-        [mysqld]
+  #############################################################################
+  # WordPress Service
+  #############################################################################
+  - kind: Service
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}
+      annotations:
+        description: Exposes and load balances the application pods
+        service.alpha.openshift.io/dependencies: "[{'name': '${APPLICATION_NAME}-mysql', 'kind': 'Service'}]"
+    spec:
+      ports:
+        - name: web
+          port: 8080
+          targetPort: 8080
+      selector:
+        name: ${APPLICATION_NAME}
 
-        sql_mode = "${MYSQL_SQL_MODE}"
-        innodb_buffer_pool_size = ${MYSQL_INNODB_BUFFER_POOL_SIZE}
-        key_buffer_size = ${MYSQL_KEY_BUFFER_SIZE}
-        ${MYSQL_CNF_LINE}
+  #############################################################################
+  # WordPress Route
+  #############################################################################
+  - kind: Route
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}
+    spec:
+      host: ${APPLICATION_DOMAIN}
+      to:
+        kind: Service
+        name: ${APPLICATION_NAME}
 
-- apiVersion: v1
-  kind: Service
-  metadata:
-    annotations:
-      description: Exposes the database server
-    name: ${MYSQL_SERVICE_NAME}
-  spec:
-    ports:
-    - name: 3306-mysql
-      port: 3306
-      targetPort: 3306
-    selector:
-      name: ${MYSQL_SERVICE_NAME}
-- apiVersion: v1
-  kind: DeploymentConfig
-  metadata:
-    annotations:
-      description: Defines how to deploy the database
-    name: dc-${MYSQL_SERVICE_NAME}
-  spec:
-    replicas: 1
-    selector:
-      name: ${MYSQL_SERVICE_NAME}
-    strategy:
-      type: Recreate
-    template:
-      metadata:
-        creationTimestamp: null
-        labels:
-          name: ${MYSQL_SERVICE_NAME}
-        name: ${MYSQL_SERVICE_NAME}
-      spec:
-        containers:
-        - env:
-          - name: MYSQL_USER
-            value: ${MYSQL_USER}
-          - name: MYSQL_PASSWORD
-            value: ${MYSQL_PASSWORD}
-          - name: MYSQL_DATABASE
-            value: ${MYSQL_DATABASE}
-          - name: MYSQL_ROOT_PASSWORD
-            value: ${MYSQL_ROOT_PASSWORD}
-          image: ' '
-          livenessProbe:
-            initialDelaySeconds: 30
-            tcpSocket:
-              port: 3306
-            timeoutSeconds: 1
-          name: cnt-mysql
-          ports:
-          - containerPort: 3306
-          readinessProbe:
-            exec:
-              command:
-              - /bin/sh
-              - -i
-              - -c
-              - MYSQL_PWD='${MYSQL_PASSWORD}' mysql -h 127.0.0.1 -u ${MYSQL_USER}
-                -D ${MYSQL_DATABASE} -e 'SELECT 1'
-            initialDelaySeconds: 5
-            timeoutSeconds: 1
-          resources:
-            limits:
-              memory: ${MYSQL_MEMORY_LIMIT}
-          volumeMounts:
-          - mountPath: /var/lib/mysql
-            name: vol-${MYSQL_SERVICE_NAME}
-          - mountPath: /etc/mysql/conf.d
-            name: vol-${MYSQL_SERVICE_NAME}-my-cnf
-          terminationMessagePath: /dev/termination-log
-        serviceAccountName: sa-hostmount-mysql
-        dnsPolicy: ClusterFirst
-        restartPolicy: Always
-        volumes:
-        - hostPath: 
-            path: ${MYSQL_DATA_PATH}
-          name: vol-${MYSQL_SERVICE_NAME}
-        - configMap:
-            name: cm-${MYSQL_SERVICE_NAME}-my-cnf
-          name: vol-${MYSQL_SERVICE_NAME}-my-cnf
-    triggers:
-    - imageChangeParams:
-        automatic: true
-        containerNames:
-        - cnt-mysql
-        from:
+  #############################################################################
+  # WordPress ImageStream
+  #############################################################################
+  - kind: ImageStream
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}
+      annotations:
+        description: Keeps track of changes in the application image
+
+  #############################################################################
+  # WordPress BuildConfig
+  #############################################################################
+  - kind: BuildConfig
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}
+      annotations:
+        description: Defines how to build the application
+    spec:
+      source:
+        type: Git
+        git:
+          uri: ${SOURCE_REPOSITORY_URL}
+          ref: ${SOURCE_REPOSITORY_REF}
+        contextDir: ${CONTEXT_DIR}
+      strategy:
+        type: Source
+        sourceStrategy:
+          from:
+            kind: ImageStreamTag
+            namespace: openshift
+            name: php:5.6
+      output:
+        to:
           kind: ImageStreamTag
-          name: is-${MYSQL_SERVICE_NAME}:${MYSQL_SERVICE_NAME}_pseudo_tag
-        lastTriggeredImage: ""
-      type: ImageChange
-    - type: ConfigChange
+          name: ${APPLICATION_NAME}:latest
+      triggers:
+        - type: ImageChange
+        - type: ConfigChange
+        - type: GitHub
+          github:
+            secret: ${GITHUB_WEBHOOK_SECRET}
+
+  #############################################################################
+  # WordPress Uploads PersistentVolumeClaim
+  #############################################################################
+  - kind: PersistentVolumeClaim
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}-uploads
+    spec:
+      accessModes:
+        - ReadWriteMany
+      resources:
+        requests:
+          storage: 1Gi
+
+  #############################################################################
+  # WordPress DeploymentConfig
+  #############################################################################
+  - kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}
+      annotations:
+        description: Defines how to deploy the application server
+    spec:
+      strategy:
+        type: Rolling
+      triggers:
+        - type: ImageChange
+          imageChangeParams:
+            automatic: true
+            containerNames:
+              - ${APPLICATION_NAME}
+            from:
+              kind: ImageStreamTag
+              name: ${APPLICATION_NAME}:latest
+        - type: ConfigChange
+      replicas: 1
+      selector:
+        name: ${APPLICATION_NAME}
+      template:
+        metadata:
+          name: ${APPLICATION_NAME}
+          labels:
+            name: ${APPLICATION_NAME}
+        spec:
+          containers:
+            - name: ${APPLICATION_NAME}
+              image: ${APPLICATION_NAME}
+              ports:
+                - containerPort: 8080
+              env:
+                - name: WORDPRESS_DB_HOST
+                  value: ${APPLICATION_NAME}-mysql
+                - name: WORDPRESS_DB_NAME
+                  value: ${DATABASE_NAME}
+                - name: WORDPRESS_DB_USER
+                  value: ${DATABASE_USER}
+                - name: WORDPRESS_DB_PASSWORD
+                  value: ${DATABASE_PASSWORD}
+              volumeMounts:
+                - name: ${APPLICATION_NAME}-uploads
+                  mountPath: /opt/app-root/src/pv-uploads
+          volumes:
+            - name: ${APPLICATION_NAME}-uploads
+              persistentVolumeClaim:
+                claimName: ${APPLICATION_NAME}-uploads
+
+  #############################################################################
+  # MySQL Service
+  #############################################################################
+  - kind: Service
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}-mysql
+      annotations:
+        description: Exposes the database server
+    spec:
+      ports:
+        - name: mysql
+          port: 3306
+          targetPort: 3306
+      selector:
+        name: ${APPLICATION_NAME}-mysql
+
+  #############################################################################
+  # MySQL PersistentVolumeClaim
+  #############################################################################
+  - kind: PersistentVolumeClaim
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}-mysql
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+
+  #############################################################################
+  # MySQL DeploymentConfig
+  #############################################################################
+  - kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: ${APPLICATION_NAME}-mysql
+      annotations:
+        description: Defines how to deploy the database
+    spec:
+      strategy:
+        type: Recreate
+      triggers:
+        - type: ConfigChange
+      replicas: 1
+      selector:
+        name: ${APPLICATION_NAME}-mysql
+      template:
+        metadata:
+          name: ${APPLICATION_NAME}-mysql
+          labels:
+            name: ${APPLICATION_NAME}-mysql
+        spec:
+          containers:
+            - name: mysql
+              image: openshift3/mysql-55-rhel7
+              ports:
+                - containerPort: 3306
+              env:
+                - name: MYSQL_USER
+                  value: ${DATABASE_USER}
+                - name: MYSQL_PASSWORD
+                  value: ${DATABASE_PASSWORD}
+                - name: MYSQL_DATABASE
+                  value: ${DATABASE_NAME}
+              volumeMounts:
+                - name: ${APPLICATION_NAME}-mysql-data
+                  mountPath: /var/lib/mysql/data
+          volumes:
+            - name: ${APPLICATION_NAME}-mysql-data
+              persistentVolumeClaim:
+                claimName: ${APPLICATION_NAME}-mysql
